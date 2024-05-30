@@ -1,0 +1,47 @@
+constant:
+    n_runs: 2
+    eval_freq: 1000
+    algorithm: ddqn
+    is_atari: True
+    n_eval_episodes: 1
+
+    learn_args:
+        total_timesteps: 10000000
+
+    agent_args:
+        policy: CnnPolicy
+        double_dqn : True
+        learning_rate: 0.0001
+        gamma: 0.99
+        buffer_size: 100000
+        batch_size: 32
+        learning_starts: 100000
+        target_update_interval: 1000
+        train_freq: 4
+        exploration_fraction: 0.1
+        exploration_final_eps: 0.01
+
+
+experiments:
+
+    Pong: # Experiment tag, used for folder/file names and plot legend labels
+#        load_path: data\path\to\file
+        load_path: data/bankheist_pretrained_on_pong/Pong
+        environment: PongNoFrameskip-v4
+        color: tab:orange
+        plot_titles: ["source_task_returns"]
+        model_save_path: data/models/pong
+
+    Bankheist: # Experiment tag, used for folder/file names and plot legend labels
+#        load_path: data\path\to\file
+        environment: BankHeistNoFrameskip-v4
+        color: tab:orange
+        plot_titles: ["target_task_returns"]
+        model_save_path: data/models/bankheist
+
+    Bankheist pretrained on pong: # Experiment tag, used for folder/file names and plot legend labels
+        environment: BankHeistNoFrameskip-v4
+        color: tab:blue
+        plot_titles: ["target_task_returns"]
+        model_load_path: data/models/pong
+        model_save_path: data/models/bankheist_pretrained_on_pong

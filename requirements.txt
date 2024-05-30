@@ -1,0 +1,14 @@
+gym==0.26.2
+gymnasium==0.29.1
+keyboard==0.13.5
+matplotlib==3.7.1
+numpy==1.26.4
+opencv_python==4.9.0.80
+PyYAML==6.0.1
+setuptools==69.0.2
+stable_baselines3[extra]==2.2.1
+tensorboard==2.12.3
+torch==2.1.2
+tqdm==4.66.1
+rich==13.7.1
+welford==0.2.5

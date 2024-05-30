@@ -1,0 +1,75 @@
+# The config files are parsed into dictionaries using PyYAML. For more information regarding PyYaml, see
+# https://pypi.org/project/PyYAML/ and https://pyyaml.org/wiki/PyYAMLDocumentation
+
+
+# List of parameters
+
+#     environment:      String that specifies the gymnasium environment used
+#     n_runs:           Number of runs over which mean and std returns are computed
+#     eval_freq:        Number of update steps after which the current policy is evaluated
+#     algorithm:        Tag that specifies which algorithm to use (currently "sac" or "ddqn")
+#     color:            String denoting the color of an experiment's curve in the return plot
+#                       (see https://matplotlib.org/stable/users/explain/colors/colors.html for more information)
+#     plot_titles:      List of plot titles to which the returns of this experiment will be added
+#     is_atari:         Specifies whether an experiment uses an atari environment
+#     n_eval_episodes:  Number of episodes over which a policy is evaluated
+#     learn_args:       Keyword Arguments passed to the algorithm's "learn" function
+#                       (see src\rl_agent\mydqn.py for more info)
+#     agent_args:       Keyword Arguments passed to the agent's constructor (see src\rl_agent\mydqn.py for more info)
+
+
+# Optional parameters
+#     time_limit:       Maximum number of environmental steps before episode termination
+#     load_path:        Path to experiments results saved with ReturnsTracker. Using this skips the experiment execution and
+#                       simply uses the loaded results
+#     buffer_save_path: Path to which the buffer will be saved at the end of the learning process
+#     buffer_load_path: Path to a buffer that is loaded at the start of the learning process
+#     model_load_path:  Path to a stored model that is loaded at the start of the learning process
+#     model_save_path:  Path where the model is saved at the end of the learning process
+
+
+# Example Config file:
+
+# First the constant parameters, these are used for all experiments unless the parameter is overruled
+constant:
+    n_runs: 1
+    eval_freq: 10
+    algorithm: ddqn
+    is_atari: True
+    n_eval_episodes: 1
+    learn_args:
+        # The number of environmental steps over which an agent is trained
+        total_timesteps: 100
+
+    agent_args:
+        policy: CnnPolicy  # String that specifies the type of policy for stable baselines (MlpPolicy or CnnPolicy)
+        double_dqn : True  # Boolean that determines whether to use dqn or ddqn
+        learning_rate: 0.0001
+        gamma: 0.99
+        buffer_size: 10
+        batch_size: 2
+        learning_starts: 1
+        target_update_interval: 1
+        train_freq: 1
+        exploration_fraction: 0.1
+        exploration_final_eps: 0.01
+
+# Second are the experiment parameters, these vary across the specified experiments and are what makes them distinct.
+experiments:
+
+    Pong:  # The experiment tag, used for folder/file names and plot legend labels
+        environment: PongNoFrameskip-v4
+        color: tab:orange
+        plot_titles: ["source_task_returns"]
+        model_save_path: data/models/pong
+
+    Bankheist: # The experiment tag, used for folder/file names and plot legend labels
+        environment: BankHeistNoFrameskip-v4
+        color: tab:orange
+        plot_titles: ["target_task_returns"]
+
+    Bankheist pretrained on pong: # The experiment tag, used for folder/file names and plot legend labels
+        environment: BankHeistNoFrameskip-v4
+        color: tab:blue
+        plot_titles: ["target_task_returns"]
+        model_load_path: data/models/pong
