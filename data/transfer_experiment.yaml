@@ -26,7 +26,6 @@ experiments:
 
     Pong: # Experiment tag, used for folder/file names and plot legend labels
 #        load_path: data\path\to\file
-        load_path: data/bankheist_pretrained_on_pong/Pong
         environment: PongNoFrameskip-v4
         color: tab:orange
         plot_titles: ["source_task_returns"]
