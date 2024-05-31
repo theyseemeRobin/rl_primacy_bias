@@ -1,6 +1,6 @@
 constant:
-    n_runs: 2
-    eval_freq: 1000
+    n_runs: 1
+    eval_freq: 100000
     algorithm: ddqn
     is_atari: True
     n_eval_episodes: 1
