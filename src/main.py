@@ -10,7 +10,7 @@ from stable_baselines3.common.env_util import make_atari_env
 from stable_baselines3.common.vec_env import VecFrameStack
 
 from callbacks.eval_callback import EvalCallback
-from my_util.tracker import ReturnsTracker
+from my_util.tracker import Tracker
 from my_util.utils import Config, load_configs, open_tensorboard, copy_file
 from rl_agent.mydqn import MyDQN
 from rl_agent.mysac import MySAC
@@ -28,7 +28,7 @@ algorithms = {
 }
 
 
-def main(config: Config, tracker: ReturnsTracker, log_dir=None):
+def main(config: Config, tracker: Tracker, log_dir):
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"Using device: {device}")
 
@@ -42,8 +42,8 @@ def main(config: Config, tracker: ReturnsTracker, log_dir=None):
         env = TimeLimit(env, config.time_limit)
 
     for run in range(config.n_runs):
-        tensorboard_dir = None if log_dir is None else os.path.join(log_dir, "tensorboard", config.experiment_tag)
-        eval_callback = EvalCallback(config.eval_freq, config.n_eval_episodes)
+        tensorboard_dir = os.path.join(log_dir, "tensorboard", config.experiment_tag) if log_dir else None
+        callback = EvalCallback(config.eval_freq, config.n_eval_episodes)
         agent = algorithms[config.algorithm](
             env=env,
             device=device,
@@ -63,21 +63,22 @@ def main(config: Config, tracker: ReturnsTracker, log_dir=None):
 
         # Execute the learning process
         agent.learn(
-            callback=CallbackList([eval_callback]),
+            callback=CallbackList([callback]),
             progress_bar=True,
             tb_log_name=config.experiment_tag,
             **config.learn_args
         )
 
-        # Add the data gathered by the evaluation callback to the tracker
-        for time, ep_return in zip(eval_callback.evaluations['time'], eval_callback.evaluations['mean']):
-            tracker.add_datapoint(config.experiment_tag, timestep=time, value=ep_return)
+        # Add the data to the tracker
+        tracker.add_weight_histogram(config.experiment_tag, agent.weight_histograms)
+        for time, update, ep_return in zip(callback.data['time'], callback.data['update_step'], callback.data['mean']):
+            tracker.add_datapoint(config.experiment_tag, timestep=time, update_step=update, value=ep_return)
 
         # Save the model
         if config.model_save_path is None:
-            save_path = os.path.join(log_dir, "models", config.experiment_tag, f"{config.experiment_tag}_{run}", "model")
+            save_path = os.path.join(log_dir, "models", config.experiment_tag, f"{config.experiment_tag}_{env}_{run}")
         else:
-            save_path = config.model_save_path
+            save_path = os.path.join(config.model_save_path, f"run_{run}")
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         torch.save(
             agent.policy.state_dict(),
@@ -89,7 +90,7 @@ def main(config: Config, tracker: ReturnsTracker, log_dir=None):
 
 if __name__ == "__main__":
 
-    base_output_path = os.path.join("data", f"{args.run_id}")
+    base_output_path = os.path.join("data", "runs", f"{args.run_id}")
     print(f"Saving results to: {base_output_path}")
     copy_file(args.config, base_output_path)
     open_tensorboard(os.path.join(base_output_path, "tensorboard"), port=args.port)
@@ -98,12 +99,9 @@ if __name__ == "__main__":
 
     plots = {}
     experiment_results = {}
-    tracker = ReturnsTracker()
+    tracker = Tracker()
     for config in configs:
-        if config.load_path is not None:
-            tracker.load(config)
-        else:
-            tracker.add_agent(config.experiment_tag, config.plot_titles, color=config.color, label=config.experiment_tag)
-            main(config, tracker, base_output_path)
+        tracker.add_agent(config.experiment_tag, config.plot_titles, color=config.color, label=config.experiment_tag)
+        main(config, tracker, base_output_path)
         tracker.save(base_output_path)
     tracker.plot(os.path.join(base_output_path, "plots"))

@@ -1,0 +1,57 @@
+constant:
+    environment: Acrobot-v1
+    n_runs: 10
+    eval_freq: 2000
+    algorithm: ddqn
+    is_atari: False
+    n_eval_episodes: 1
+
+    learn_args:
+        total_timesteps: 350000
+
+    agent_args:
+        policy: MlpPolicy
+        double_dqn : True
+        learning_rate: 0.0001
+        gamma: 0.99
+        buffer_size: 10000
+        batch_size: 128
+        learning_starts: 200
+        target_update_interval: 37
+        train_freq: 16
+        gradient_steps: 1
+        exploration_fraction: 0.02
+        exploration_final_eps: 0.07
+        policy_kwargs:
+            net_arch : [256, 256]
+
+
+experiments:
+
+    DDQN:
+        color: tab:orange
+        plot_titles: [ "primed", "reset", "regularized"]
+        model_save_path : data/models/DDQN_Acrobot_Primed
+
+    DDQN primed:
+        color: tab:blue
+        plot_titles: ["primed"]
+        model_save_path : data/models/DDQN_Acrobot_Primed
+        agent_args:
+            n_priming_steps: 100000
+
+    DDQN primed + reset:
+        color: tab:green
+        plot_titles: ["reset"]
+        agent_args:
+            reset_layers: ['all']
+            n_priming_steps: 100000
+        model_save_path : data/models/DDQN_Acrobot_Primed_Reset
+
+    DDQN primed + l2:
+        color: tab:green
+        plot_titles: ["regularized"]
+        agent_args:
+            priming_weight_decay: 1
+            n_priming_steps: 100000
+        model_save_path : data/models/DDQN_Acrobot_Primed_Regularized

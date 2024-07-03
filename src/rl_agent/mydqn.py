@@ -1,15 +1,15 @@
+from io import StringIO
+from csv import writer
 from typing import TypeVar
 import numpy as np
+import pandas as pd
 import torch
 from stable_baselines3 import DQN
 from torch import argmax, nn
 from torch.nn import functional as F
 from stable_baselines3.common.type_aliases import MaybeCallback
 from stable_baselines3.common.utils import polyak_update
-
-from my_util.tracker import ReturnsTracker
-
-SelfMyDQN = TypeVar("SelfMyDQN", bound="MyDQN")
+from torch.optim import AdamW
 
 
 class MyDQN(DQN):
@@ -19,10 +19,11 @@ class MyDQN(DQN):
             double_dqn: bool = True,
             n_priming_steps: int = 0,
             reset_layers: list = None,
-            reset_target_layers: list = None,
             reset_interval: int = None,
             priming_weight_decay: float = 0,
             weight_decay: float = 0,
+            n_weight_logs: int = 20,
+            n_weight_bins: int = 30,
             *args,
             **kwargs
     ) -> None:
@@ -49,23 +50,30 @@ class MyDQN(DQN):
         kwargs :
             Keyword Arguments passed to the base class constructor
         """
+        kwargs["policy_kwargs"].update({"optimizer_class" : AdamW})
         super().__init__(
             *args,
             **kwargs
         )
         self.double_dqn = double_dqn
         self.n_priming_steps = n_priming_steps
-        self.reset_target_layers = reset_target_layers
-        self.reset_layers = reset_layers
+        self.reset_layers = [] if reset_layers is None else reset_layers
         self.reset_interval = reset_interval
         self.priming_weight_decay = priming_weight_decay
         self.weight_decay = weight_decay
-
         for group in self.policy.optimizer.param_groups:
             group['weight_decay'] = self.weight_decay
 
+        self.n_weight_logs = n_weight_logs,
+        self.n_weight_bins = n_weight_bins
+        self.weight_histograms = None
+
     def _on_step(self) -> None:
         """
+        This function is changed from the original implementation of stable-baselines3. It now no longer updates the
+        target networks, this is instead periodically performed in MyDQN.train. The purpose of this change was to ensure
+        target updates could occur during the heavy priming phase.
+
         Update the exploration rate.
         This method is called in ``collect_rollouts()`` after each step in the environment.
         """
@@ -82,7 +90,10 @@ class MyDQN(DQN):
         reset_num_timesteps: bool = True,
         progress_bar: bool = False,
     ):
-        self.on_learning_start()
+        for group in self.policy.optimizer.param_groups:
+            group['weight_decay'] = self.weight_decay
+        self.weight_histograms = {}
+
         super().learn(
             total_timesteps,
             callback,
@@ -92,7 +103,11 @@ class MyDQN(DQN):
             progress_bar
         )
 
-    def train(self, gradient_steps: int, batch_size: int = 100) -> None:
+    def train(self, gradient_steps: int, batch_size: int = 100, n_weight_logs: int = 20 ) -> None:
+
+        n_total_updates = self._total_timesteps / self.train_freq.frequency * gradient_steps + self.n_priming_steps
+        weights_log_interval = n_total_updates // n_weight_logs
+
         # Switch to train mode (this affects batch norm / dropout)
         self.policy.set_training_mode(True)
         # Update learning rate according to schedule
@@ -103,6 +118,8 @@ class MyDQN(DQN):
             # Sample replay buffer
             replay_data = self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)  # type: ignore[union-attr]
 
+            if self.n_priming_steps:
+                self._on_priming_start()
             for priming_step in range(max(self.n_priming_steps, 1)):
                 with torch.no_grad():
                     if self.double_dqn:
@@ -120,23 +137,26 @@ class MyDQN(DQN):
                 # Retrieve the q-values for the actions from the replay buffer
                 current_q_values = torch.gather(current_q_values, dim=1, index=replay_data.actions.long())
 
-                # Compute Huber loss (less sensitive to outliers)
                 loss = F.mse_loss(current_q_values, target_q_values)
                 losses.append(loss.item())
-
                 # Optimize the policy
                 self.policy.optimizer.zero_grad()
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
                 self.policy.optimizer.step()
+
+                # Increase update counter
+                self._n_updates += 1
+
                 if self._n_updates % self.target_update_interval == 0:
                     polyak_update(self.q_net.parameters(), self.q_net_target.parameters(), self.tau)
                     polyak_update(self.batch_norm_stats, self.batch_norm_stats_target, 1.0)
 
-            self.on_priming_end()
-
-            # Increase update counter
-            self._n_updates += 1
+                if self._n_updates % weights_log_interval == 0:
+                    self.log_weights()
+                if self.reset_interval and self._n_updates % self.reset_interval == 0 and self.n_priming_steps == 0:
+                    self.reset_model_layers()
+            self._on_priming_end()
 
         self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
         self.logger.record("train/loss", np.mean(losses))
@@ -151,22 +171,30 @@ class MyDQN(DQN):
                     if hasattr(layer, "weight") and (idx in self.reset_layers or "all" in self.reset_layers):
                         layer.reset_parameters()
 
-            if self.reset_target_layers is not None:
-                for idx, layer in enumerate(self.policy.q_net_target.q_net):
-                    if hasattr(layer, "weight") and (idx in self.reset_target_layers or "all" in self.reset_target_layers):
-                        layer.reset_parameters()
-
-    def _should_reset(self):
-        return self._n_updates == 0 or (self.reset_interval is not None and self.num_timesteps % self.reset_interval == 0)
-
-    def on_priming_end(self):
-        self.n_priming_steps = 0
-        if self._should_reset():
-            self.reset_model_layers()
-
+    def _on_priming_start(self):
         for group in self.policy.optimizer.param_groups:
             group['weight_decay'] = self.weight_decay
 
-    def on_learning_start(self):
+    def _on_priming_end(self):
+        if self.n_priming_steps == 0:
+            return
+        self.n_priming_steps = 0
+        self.reset_model_layers()
         for group in self.policy.optimizer.param_groups:
-            group['weight_decay'] = self.priming_weight_decay
+            group['weight_decay'] = self.weight_decay
+
+    def log_weights(self):
+        for layer_name, layer_weights in self.q_net.state_dict().items():
+            if "weight" not in layer_name:
+                continue
+            counts, bins = np.histogram(layer_weights.cpu(), bins=self.n_weight_bins)
+            row = [self.num_timesteps, self._n_updates, *bins, *counts]
+            if self.weight_histograms.get(layer_name) is None:
+                bin_keys = [f"bin_{idx}" for idx in range(self.n_weight_bins + 1)]
+                count_keys = [f"count_{idx}" for idx in range(self.n_weight_bins)]
+                self.weight_histograms[layer_name] = pd.DataFrame([row], columns=["timestep", "n_updates", *bin_keys, *count_keys])
+            else:
+                self.weight_histograms[layer_name] = pd.concat(
+                    [pd.DataFrame([row], columns=self.weight_histograms[layer_name].columns), self.weight_histograms[layer_name]],
+                    ignore_index=True
+                )

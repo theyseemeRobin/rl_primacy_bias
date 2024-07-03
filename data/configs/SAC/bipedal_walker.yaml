@@ -1,0 +1,56 @@
+constant:
+    environment: BipedalWalker-v3
+    n_runs: 3
+    eval_freq: 2000
+    algorithm: sac
+    is_atari: False
+    n_eval_episodes: 1
+
+    learn_args:
+        total_timesteps: 500000
+
+    agent_args:
+        policy: MlpPolicy
+        learning_rate: 0.0003
+        gamma: 0.99
+        buffer_size: 100000
+        batch_size: 256
+        learning_starts: 1000
+        train_freq: 1
+        target_update_interval: 1
+        gradient_steps: 1
+        tau: 0.005
+        policy_kwargs:
+            net_arch: [400, 300]
+
+experiments:
+
+    SAC:
+        color: tab:orange
+        plot_titles: [ "primed", "reset", "regularized"]
+        model_save_path : data/models/SAC_BipedalWalker_Primed
+
+    SAC primed:
+        color: tab:blue
+        plot_titles: ["primed"]
+        model_save_path : data/models/SAC_BipedalWalker_Primed
+        agent_args:
+            n_priming_steps: 100000
+
+    SAC primed + reset:
+        color: tab:green
+        plot_titles: ["reset"]
+        agent_args:
+            reset_actor_layers: ['all']
+            reset_critic_layers: ['all']
+            n_priming_steps: 100000
+        model_save_path : data/models/SAC_BipedalWalker_Primed_Reset
+
+    SAC primed + l2:
+        color: tab:green
+        plot_titles: ["regularized"]
+        agent_args:
+            priming_weight_decay_actor: 0.95
+            priming_weight_decay_critic: 0.95
+            n_priming_steps: 100000
+        model_save_path : data/models/SAC_BipedalWalker_Primed_Regularized

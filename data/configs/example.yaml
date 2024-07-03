@@ -20,8 +20,6 @@
 
 # Optional parameters
 #     time_limit:       Maximum number of environmental steps before episode termination
-#     load_path:        Path to experiments results saved with ReturnsTracker. Using this skips the experiment execution and
-#                       simply uses the loaded results
 #     buffer_save_path: Path to which the buffer will be saved at the end of the learning process
 #     buffer_load_path: Path to a buffer that is loaded at the start of the learning process
 #     model_load_path:  Path to a stored model that is loaded at the start of the learning process

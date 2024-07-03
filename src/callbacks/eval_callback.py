@@ -14,8 +14,9 @@ class EvalCallback(BaseCallback):
         self.eval_freq = eval_freq
         self.n_eval_episodes = n_eval_episodes
         self.rewards = []
-        self.evaluations = {
+        self.data = {
             "time": [],
+            "update_step": [],
             "mean": [],
             "std": []
         }
@@ -33,8 +34,9 @@ class EvalCallback(BaseCallback):
                 deterministic=True,
                 return_episode_rewards=True,
             )
-            self.evaluations['time'].append(self.locals['self']._n_updates)
-            self.evaluations['mean'].append(np.mean(rewards))
-            self.evaluations['std'].append(np.std(rewards))
+            self.data['time'].append(self.locals['self'].num_timesteps)
+            self.data['update_step'].append(self.locals['self']._n_updates)
+            self.data['mean'].append(np.mean(rewards))
+            self.data['std'].append(np.std(rewards))
             self.locals['self'].logger.record("Greedy undiscounted returns", np.mean(rewards))
         return

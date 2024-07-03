@@ -1,12 +1,14 @@
+import itertools as it
+
+import pandas as pd
 from torch.nn import functional as F
 import torch as th
 import numpy as np
 
 from stable_baselines3 import SAC
 from stable_baselines3.common.type_aliases import MaybeCallback
-from stable_baselines3.common.utils import polyak_update, get_parameters_by_name
-
-from my_util.tracker import ReturnsTracker
+from stable_baselines3.common.utils import polyak_update
+from torch.optim import AdamW
 
 
 class MySAC(SAC):
@@ -14,48 +16,52 @@ class MySAC(SAC):
     def __init__(
             self,
             n_priming_steps: int = 1,
-            reset_actor_layers=None,
-            reset_critic_layers=None,
-            reset_critic_target_layers=None,
             reset_interval=None,
-            priming_weight_decay: float = 0,
-            weight_decay: float = 0,
-            plot_distributions: bool = False,
-            tracker: ReturnsTracker = None,
+            reset_critic_layers=None,
+            reset_actor_layers=None,
+            weight_decay_actor: float = 0,
+            weight_decay_critic: float = 0,
+            priming_weight_decay_actor: float = 0,
+            priming_weight_decay_critic: float = 0,
+            n_weight_logs: int = 20,
+            n_weight_bins: int = 30,
             *args,
             **kwargs
     ) -> None:
+        kwargs["policy_kwargs"].update({"optimizer_class": AdamW})
         super().__init__(
             *args,
             **kwargs
         )
         self.n_priming_steps = n_priming_steps
-        self.reset_actor_layers = reset_actor_layers
-        self.reset_critic_target_layers = reset_critic_target_layers
-        self.reset_critic_layers = reset_critic_layers
+        self.reset_critic_layers = [] if reset_critic_layers is None else reset_critic_layers
+        self.reset_actor_layers = [] if reset_actor_layers is None else reset_actor_layers
         self.reset_interval = reset_interval
 
         # Regularization
-        self.priming_weight_decay = priming_weight_decay
-        self.weight_decay = weight_decay
+        self.priming_weight_decay_actor = priming_weight_decay_actor
+        self.weight_decay_actor = weight_decay_actor
+        self.priming_weight_decay_critic = priming_weight_decay_critic
+        self.weight_decay_critic = weight_decay_critic
 
-        self.histograms = {}
-        self.log_interval = None
-        self.plot_distributions = plot_distributions
-        self.tracker = tracker
+        self.n_weight_logs = n_weight_logs,
+        self.n_weight_bins = n_weight_bins
+        self.weight_histograms = None
 
     def learn(
         self,
         total_timesteps: int,
         callback: MaybeCallback = None,
         log_interval: int = 4,
-        tb_log_name: str = "DQN",
+        tb_log_name: str = "SAC",
         reset_num_timesteps: bool = True,
         progress_bar: bool = False,
     ):
-        self.log_interval = max(
-            ((total_timesteps / self.train_freq.frequency) * self.gradient_steps + self.n_priming_steps) // 20, 1)
-        self.on_learning_start()
+        for group in self.actor.optimizer.param_groups:
+            group['weight_decay'] = self.weight_decay_actor
+        for group in self.critic.optimizer.param_groups:
+            group['weight_decay'] = self.weight_decay_critic
+        self.weight_histograms = {}
         super().learn(
             total_timesteps,
             callback,
@@ -65,7 +71,11 @@ class MySAC(SAC):
             progress_bar
         )
 
-    def train(self, gradient_steps: int, batch_size: int = 64) -> None:
+    def train(self, gradient_steps: int, batch_size: int = 64, n_weight_logs: int = 20 ) -> None:
+
+        n_total_updates = self._total_timesteps / self.train_freq.frequency * gradient_steps + self.n_priming_steps
+        weights_log_interval = n_total_updates // n_weight_logs
+
         self.policy.set_training_mode(True)
         optimizers = [self.actor.optimizer, self.critic.optimizer]
         if self.ent_coef_optimizer is not None:
@@ -78,10 +88,9 @@ class MySAC(SAC):
             # Sample replay buffer
             replay_data = self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)  # type: ignore[union-attr]
 
+            if self.n_priming_steps:
+                self.on_priming_start()
             for priming_step in range(max(self.n_priming_steps, 1)):
-                if (self._n_updates + priming_step) % self.log_interval == 0:
-                    self.log_weight_distributions(self._n_updates + priming_step - self.n_priming_steps)
-
                 # We need to sample because `log_std` may have changed between two gradient steps
                 if self.use_sde:
                     self.actor.reset_noise()
@@ -147,16 +156,19 @@ class MySAC(SAC):
                 self.actor.optimizer.zero_grad()
                 actor_loss.backward()
                 self.actor.optimizer.step()
+                self._n_updates += 1
 
                 # Update target networks
                 if self._n_updates % self.target_update_interval == 0:
                     polyak_update(self.critic.parameters(), self.critic_target.parameters(), self.tau)
                     # Copy running stats, see GH issue #996
                     polyak_update(self.batch_norm_stats, self.batch_norm_stats_target, 1.0)
+                if self._n_updates % weights_log_interval == 0:
+                    self.log_weights()
+                if self.reset_interval and self._n_updates % self.reset_interval == 0 and self.n_priming_steps == 0:
+                    self.reset_model_layers()
 
             self.on_priming_end()
-            self.n_priming_steps = 0
-            self._n_updates += 1
 
         self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
         self.logger.record("train/ent_coef", np.mean(ent_coefs))
@@ -166,26 +178,45 @@ class MySAC(SAC):
             self.logger.record("train/ent_coef_loss", np.mean(ent_coef_losses))
 
     def reset_model_layers(self):
-        pass
-
-    def _should_reset(self):
-        return self._n_updates == 0 or (
-                    self.reset_interval is not None and self.num_timesteps % self.reset_interval == 0)
+        with th.no_grad():
+            if self.reset_critic_layers is not None:
+                for idx, layer in enumerate([*self.critic.qf0, *self.critic.qf1]):
+                    if hasattr(layer, "weight") and (idx in self.reset_critic_layers or "all" in self.reset_critic_layers):
+                        layer.reset_parameters()
+            if self.reset_actor_layers is not None:
+                for idx, layer in enumerate([*self.actor.latent_pi, self.actor.mu, self.actor.log_std]):
+                    if hasattr(layer, "weight") and (idx in self.reset_actor_layers or "all" in self.reset_actor_layers):
+                        layer.reset_parameters()
 
     def on_priming_end(self):
-        if self._should_reset():
-            self.reset_model_layers()
-
-    def on_learning_start(self):
-        pass
-
-    def log_weight_distributions(self, timestep):
-        if not self.plot_distributions:
+        if self.n_priming_steps == 0:
             return
-        for key, layer in self.policy.state_dict().items():
-            if "weight" not in key:
+
+        self.n_priming_steps = 0
+        self.reset_model_layers()
+        for group in self.critic.optimizer.param_groups:
+            group['weight_decay'] = self.weight_decay_critic
+        for group in self.actor.optimizer.param_groups:
+            group['weight_decay'] = self.weight_decay_actor
+
+    def on_priming_start(self):
+        for group in self.actor.optimizer.param_groups:
+            group['weight_decay'] = self.weight_decay_actor
+        for group in self.critic.optimizer.param_groups:
+            group['weight_decay'] = self.weight_decay_critic
+
+    def log_weights(self):
+        for layer_name, layer_weights in it.chain(self.actor.state_dict().items(), self.critic.state_dict().items()):
+            if "weight" not in layer_name:
                 continue
-            if self.plot_distributions:
-                self.tracker.add_metric(key, metric_type="ridgeline", plots=[key], label=key)
-                counts, bins = np.histogram(layer.cpu(), bins=30)
-                self.tracker.add_datapoint(key, counts=counts, bin_edges=bins, step=timestep)
+            counts, bins = np.histogram(layer_weights.cpu(), bins=self.n_weight_bins)
+            row = [self.num_timesteps, self._n_updates, *bins, *counts]
+            if self.weight_histograms.get(layer_name) is None:
+                bin_keys = [f"bin_{idx}" for idx in range(self.n_weight_bins + 1)]
+                count_keys = [f"count_{idx}" for idx in range(self.n_weight_bins)]
+                self.weight_histograms[layer_name] = pd.DataFrame([row], columns=["timestep", "n_updates", *bin_keys, *count_keys])
+            else:
+                self.weight_histograms[layer_name] = pd.concat(
+                    [pd.DataFrame([row], columns=self.weight_histograms[layer_name].columns), self.weight_histograms[layer_name]],
+                    ignore_index=True
+                )

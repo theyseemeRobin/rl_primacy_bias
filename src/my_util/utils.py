@@ -8,28 +8,42 @@ import os
 import yaml
 from tensorboard import program
 
-from my_util.tracker import ReturnsTracker
+from my_util.tracker import Tracker
 
 
 @dataclass
 class Config:
+
     experiment_tag: str
     environment: str
     n_runs: int
     eval_freq: int
     algorithm: str
-    learn_args: dict
-    agent_args: dict
     color: str
     plot_titles: list
     is_atari: bool
     n_eval_episodes: int
+    learn_args: dict
+    agent_args: dict
     time_limit: int = None
-    load_path: str = None
     buffer_save_path: str = None
     buffer_load_path: str = None
     model_load_path: str = None
     model_save_path: str = None
+
+    def __post_init__(self):
+        if self.n_runs < 1:
+            raise ValueError
+        if self.n_eval_episodes < 1:
+            raise ValueError
+        if self.eval_freq < 1:
+            raise ValueError
+        if self.time_limit is not None and self.time_limit < 1:
+            raise ValueError
+        if self.buffer_load_path is not None and not os.path.exists(self.buffer_load_path):
+            raise ValueError
+        if self.model_load_path is not None and not os.path.exists(self.model_load_path):
+            raise ValueError
 
 
 def merge_dicts(dict1, dict2):

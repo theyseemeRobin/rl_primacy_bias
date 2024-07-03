@@ -1,4 +1,7 @@
 import os.path
+
+import joypy
+import pandas as pd
 import torch
 from matplotlib import pyplot as plt
 from welford import Welford
@@ -13,14 +16,18 @@ class Curve:
         self.plot_titles = plot_titles
         self.data = {}
 
-    def add_datapoint(self, timestep, value):
-        if self.data.get(timestep) is None:
-            self.data[timestep] = Welford()
-        self.data[timestep].add(np.array(value))
+    def add_datapoint(self, timestep, update_step, value):
+        if self.data.get((timestep, update_step)) is None:
+            self.data[(timestep, update_step)] = Welford()
+        self.data[(timestep, update_step)].add(np.array(value))
 
     @property
     def times(self):
-        return np.array([time for time in self.data.keys()])
+        return np.array([time for time, update_step in self.data.keys()])
+
+    @property
+    def update_steps(self):
+        return np.array([update_step for time, update_step in self.data.keys()])
 
     @property
     def means(self):
@@ -31,7 +38,7 @@ class Curve:
         return np.array([np.sqrt(welford.var_p) for welford in self.data.values()])
 
     @classmethod
-    def plot(cls, plot_title: str, xlabel: str = "Step", ylabel: str = "Episode Return"):
+    def plot(cls, plot_title: str, xlabel: str = "Update Step", ylabel: str = "Return"):
         plt.rcParams['font.family'] = 'serif'
         if xlabel:
             plt.xlabel(xlabel, fontsize=18)
@@ -56,13 +63,20 @@ class Curve:
         plt.fill_between(self.times, self.means - self.stds, self.means + self.stds, color=self.color,
                          alpha=0.3, linewidth=0)
 
+    def to_csv(self, path):
+        csv_data = np.stack((self.times, self.update_steps, self.means, self.stds), axis=1)
+        df = pd.DataFrame(csv_data, columns=["time", "update_step", "mean", "std"])
+        df.to_csv(path, index=False)
 
-class ReturnsTracker:
+
+class Tracker:
     """
     Tracks mean and std returns over multiple runs for specified agents.
     """
+
     def __init__(self):
         self.returns = {}
+        self.weight_histograms: dict[str, pd.DataFrame] = {}
         self.plots = {}
 
     def add_agent(self, agent_id: str, plots=None, **metric_kwargs):
@@ -100,6 +114,10 @@ class ReturnsTracker:
         """
         self.returns[agent_id].add_datapoint(**kwargs)
 
+    def add_weight_histogram(self, agent_id, histograms):
+        if self.weight_histograms.get(agent_id) is None:
+            self.weight_histograms[agent_id] = histograms
+
     def plot(self, plot_dir: str):
         """
         Plots all metrics and saves the resulting figures
@@ -109,14 +127,28 @@ class ReturnsTracker:
         plot_dir :
             Directory where the plots are saved
         """
-        os.makedirs(plot_dir, exist_ok=True)
+        os.makedirs(os.path.join(plot_dir, "returns"), exist_ok=True)
+        os.makedirs(os.path.join(plot_dir, "distributions"), exist_ok=True)
         for plot_title, agents in self.plots.items():
             for agent_id, return_history in agents.items():
                 Curve.plot(plot_title=plot_title)
                 return_history.add_to_plot()
             plt.legend()
-            plt.savefig(os.path.join(plot_dir, plot_title))
+            plt.savefig(os.path.join(plot_dir, "returns", plot_title.replace(".", "_")))
             plt.close()
+
+        for agent_id, layers in self.weight_histograms.items():
+            for layer_name, histogram in layers.items():
+                fig, axes = joypy.joyplot(histogram, colormap=plt.colormaps.get_cmap("autumn"), by="n_updates")
+                for idx, ax in enumerate(axes):
+                    ax.set_yticklabels([int(float(ax.get_yticklabels()[0].get_text()))])
+                    if idx % 2 != 0:
+                        ax.set_yticklabels("")
+                plt.xlabel(f"Model weights", fontsize=16)
+                plt.ylabel("Update Step", fontsize=16)
+                plt.title(layer_name, fontsize=20)
+                plt.savefig(os.path.join(plot_dir, "distributions", str(layer_name).replace(".", "_")))
+                plt.close()
 
     def save(self, path: str):
         """
@@ -127,24 +159,10 @@ class ReturnsTracker:
         path :
             Directory where the tracked data is saved
         """
-        os.makedirs(path, exist_ok=True)
         for agent_id, return_history in self.returns.items():
-            torch.save({agent_id : return_history}, os.path.join(path, agent_id))
-
-    def load(self, config):
-        """
-        Restores tracked data saved using `save_metrics`.
-
-        Parameters
-        ----------
-        config :
-        """
-        agent_id, return_history = tuple(torch.load(config.load_path).items())[0]
-        return_history.plot_titles = config.plot_titles
-        return_history.label = config.experiment_tag
-        return_history.color = config.color
-        self.returns.update({config.experiment_tag : return_history})
-        for plot in config.plot_titles:
-            if self.plots.get(plot) is None:
-                self.plots[plot] = {}
-            self.plots[plot][agent_id] = self.returns[agent_id]
+            os.makedirs(os.path.join(path, agent_id, "returns"), exist_ok=True)
+            return_history.to_csv(os.path.join(path, agent_id, "returns", agent_id + ".csv"))
+        for agent_id, layers in self.weight_histograms.items():
+            os.makedirs(os.path.join(path, agent_id, "histograms"), exist_ok=True)
+            for layer_name, histogram in layers.items():
+                histogram.to_csv(os.path.join(path, agent_id, "histograms", layer_name.replace(".", "_") + ".csv"))

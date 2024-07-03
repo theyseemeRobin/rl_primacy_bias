@@ -5,7 +5,7 @@ After setting the working directory to the root project folder, install all the 
 pip install .
 ```
 
-To run the code, it requires a config file that specifies the experiment configurations (see [here](data/example.yaml)), 
+To run the code, it requires a config file that specifies the experiment configurations (see [here](data/configs/example.yaml)), 
 an identifier that determines folder/file names, and a port for tensorboard. These can be specified as flags from the terminal as follows:
 
 ```
