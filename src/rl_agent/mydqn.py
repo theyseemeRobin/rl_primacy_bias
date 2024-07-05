@@ -1,3 +1,5 @@
+import os
+import itertools
 from io import StringIO
 from csv import writer
 from typing import TypeVar
@@ -22,8 +24,7 @@ class MyDQN(DQN):
             reset_interval: int = None,
             priming_weight_decay: float = 0,
             weight_decay: float = 0,
-            n_weight_logs: int = 20,
-            n_weight_bins: int = 30,
+            weight_dir: str = None,
             *args,
             **kwargs
     ) -> None:
@@ -50,7 +51,6 @@ class MyDQN(DQN):
         kwargs :
             Keyword Arguments passed to the base class constructor
         """
-        kwargs["policy_kwargs"].update({"optimizer_class" : AdamW})
         super().__init__(
             *args,
             **kwargs
@@ -64,9 +64,9 @@ class MyDQN(DQN):
         for group in self.policy.optimizer.param_groups:
             group['weight_decay'] = self.weight_decay
 
-        self.n_weight_logs = n_weight_logs,
-        self.n_weight_bins = n_weight_bins
-        self.weight_histograms = None
+        if weight_dir is not None:
+            os.makedirs(weight_dir, exist_ok=True)
+        self.weight_dir = weight_dir
 
     def _on_step(self) -> None:
         """
@@ -92,7 +92,6 @@ class MyDQN(DQN):
     ):
         for group in self.policy.optimizer.param_groups:
             group['weight_decay'] = self.weight_decay
-        self.weight_histograms = {}
 
         super().learn(
             total_timesteps,
@@ -184,17 +183,13 @@ class MyDQN(DQN):
             group['weight_decay'] = self.weight_decay
 
     def log_weights(self):
+        if self.weight_dir is None:
+            return
         for layer_name, layer_weights in self.q_net.state_dict().items():
             if "weight" not in layer_name:
                 continue
-            counts, bins = np.histogram(layer_weights.cpu(), bins=self.n_weight_bins)
-            row = [self.num_timesteps, self._n_updates, *bins, *counts]
-            if self.weight_histograms.get(layer_name) is None:
-                bin_keys = [f"bin_{idx}" for idx in range(self.n_weight_bins + 1)]
-                count_keys = [f"count_{idx}" for idx in range(self.n_weight_bins)]
-                self.weight_histograms[layer_name] = pd.DataFrame([row], columns=["timestep", "n_updates", *bin_keys, *count_keys])
-            else:
-                self.weight_histograms[layer_name] = pd.concat(
-                    [pd.DataFrame([row], columns=self.weight_histograms[layer_name].columns), self.weight_histograms[layer_name]],
-                    ignore_index=True
-                )
+            weights_1d = layer_weights.view(-1)
+            weights_1d.time = self.num_timesteps
+            weights_1d.n_updates = self._n_updates
+            os.makedirs(os.path.join(self.weight_dir, layer_name.replace(".", "_")), exist_ok=True)
+            torch.save(weights_1d, os.path.join(self.weight_dir, layer_name.replace(".", "_"), str(self._n_updates)))

@@ -1,4 +1,5 @@
-import itertools as it
+import itertools
+import os
 
 import pandas as pd
 from torch.nn import functional as F
@@ -23,12 +24,10 @@ class MySAC(SAC):
             weight_decay_critic: float = 0,
             priming_weight_decay_actor: float = 0,
             priming_weight_decay_critic: float = 0,
-            n_weight_logs: int = 20,
-            n_weight_bins: int = 30,
+            weight_dir: str = None,
             *args,
             **kwargs
     ) -> None:
-        kwargs["policy_kwargs"].update({"optimizer_class": AdamW})
         super().__init__(
             *args,
             **kwargs
@@ -44,10 +43,9 @@ class MySAC(SAC):
         self.priming_weight_decay_critic = priming_weight_decay_critic
         self.weight_decay_critic = weight_decay_critic
 
-        self.n_weight_logs = n_weight_logs,
-        self.n_weight_bins = n_weight_bins
-        self.weight_histograms = None
-
+        if weight_dir is not None:
+            os.makedirs(weight_dir, exist_ok=True)
+        self.weight_dir = weight_dir
     def learn(
         self,
         total_timesteps: int,
@@ -61,7 +59,6 @@ class MySAC(SAC):
             group['weight_decay'] = self.weight_decay_actor
         for group in self.critic.optimizer.param_groups:
             group['weight_decay'] = self.weight_decay_critic
-        self.weight_histograms = {}
         super().learn(
             total_timesteps,
             callback,
@@ -91,33 +88,12 @@ class MySAC(SAC):
             if self.n_priming_steps:
                 self.on_priming_start()
             for priming_step in range(max(self.n_priming_steps, 1)):
-                # We need to sample because `log_std` may have changed between two gradient steps
-                if self.use_sde:
-                    self.actor.reset_noise()
 
                 # Action by the current actor for the sampled state
                 actions_pi, log_prob = self.actor.action_log_prob(replay_data.observations)
                 log_prob = log_prob.reshape(-1, 1)
-
-                ent_coef_loss = None
-                if self.ent_coef_optimizer is not None and self.log_ent_coef is not None:
-                    # Important: detach the variable from the graph
-                    # so we don't change it with other losses
-                    # see https://github.com/rail-berkeley/softlearning/issues/60
-                    ent_coef = th.exp(self.log_ent_coef.detach())
-                    ent_coef_loss = -(self.log_ent_coef * (log_prob + self.target_entropy).detach()).mean()
-                    ent_coef_losses.append(ent_coef_loss.item())
-                else:
-                    ent_coef = self.ent_coef_tensor
-
+                ent_coef = self.ent_coef_tensor
                 ent_coefs.append(ent_coef.item())
-
-                # Optimize entropy coefficient, also called
-                # entropy temperature or alpha in the paper
-                if ent_coef_loss is not None and self.ent_coef_optimizer is not None:
-                    self.ent_coef_optimizer.zero_grad()
-                    ent_coef_loss.backward()
-                    self.ent_coef_optimizer.step()
 
                 with th.no_grad():
                     # Select action according to policy
@@ -168,7 +144,9 @@ class MySAC(SAC):
                 if self.reset_interval and self._n_updates % self.reset_interval == 0 and self.n_priming_steps == 0:
                     self.reset_model_layers()
 
-            self.on_priming_end()
+            if self.n_priming_steps:
+                self.on_priming_end()
+                self.n_priming_steps = 0
 
         self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
         self.logger.record("train/ent_coef", np.mean(ent_coefs))
@@ -180,7 +158,7 @@ class MySAC(SAC):
     def reset_model_layers(self):
         with th.no_grad():
             if self.reset_critic_layers is not None:
-                for idx, layer in enumerate([*self.critic.qf0, *self.critic.qf1]):
+                for idx, layer in enumerate([*self.critic.qf0, *self.critic.qf1, *self.critic_target.qf0, *self.critic_target.qf1]):
                     if hasattr(layer, "weight") and (idx in self.reset_critic_layers or "all" in self.reset_critic_layers):
                         layer.reset_parameters()
             if self.reset_actor_layers is not None:
@@ -189,10 +167,6 @@ class MySAC(SAC):
                         layer.reset_parameters()
 
     def on_priming_end(self):
-        if self.n_priming_steps == 0:
-            return
-
-        self.n_priming_steps = 0
         self.reset_model_layers()
         for group in self.critic.optimizer.param_groups:
             group['weight_decay'] = self.weight_decay_critic
@@ -206,17 +180,14 @@ class MySAC(SAC):
             group['weight_decay'] = self.weight_decay_critic
 
     def log_weights(self):
-        for layer_name, layer_weights in it.chain(self.actor.state_dict().items(), self.critic.state_dict().items()):
+        if self.weight_dir is None:
+            return
+        for layer_name, layer_weights in itertools.chain(self.actor.state_dict().items(), self.critic.state_dict().items()):
             if "weight" not in layer_name:
                 continue
-            counts, bins = np.histogram(layer_weights.cpu(), bins=self.n_weight_bins)
-            row = [self.num_timesteps, self._n_updates, *bins, *counts]
-            if self.weight_histograms.get(layer_name) is None:
-                bin_keys = [f"bin_{idx}" for idx in range(self.n_weight_bins + 1)]
-                count_keys = [f"count_{idx}" for idx in range(self.n_weight_bins)]
-                self.weight_histograms[layer_name] = pd.DataFrame([row], columns=["timestep", "n_updates", *bin_keys, *count_keys])
-            else:
-                self.weight_histograms[layer_name] = pd.concat(
-                    [pd.DataFrame([row], columns=self.weight_histograms[layer_name].columns), self.weight_histograms[layer_name]],
-                    ignore_index=True
-                )
+            weights_1d = layer_weights.view(-1)
+            weights_1d.time = self.num_timesteps
+            weights_1d.n_updates = self._n_updates
+            os.makedirs(os.path.join(self.weight_dir, layer_name.replace(".", "_")), exist_ok=True)
+            th.save(weights_1d, os.path.join(self.weight_dir, layer_name.replace(".", "_"), str(self._n_updates)))
+        pass

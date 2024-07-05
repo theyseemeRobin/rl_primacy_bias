@@ -10,7 +10,7 @@ from stable_baselines3.common.env_util import make_atari_env
 from stable_baselines3.common.vec_env import VecFrameStack
 
 from callbacks.eval_callback import EvalCallback
-from my_util.tracker import Tracker
+from my_util.tracker import Tracker, plot_weights
 from my_util.utils import Config, load_configs, open_tensorboard, copy_file
 from rl_agent.mydqn import MyDQN
 from rl_agent.mysac import MySAC
@@ -42,13 +42,14 @@ def main(config: Config, tracker: Tracker, log_dir):
         env = TimeLimit(env, config.time_limit)
 
     for run in range(config.n_runs):
-        tensorboard_dir = os.path.join(log_dir, "tensorboard", config.experiment_tag) if log_dir else None
+        tensorboard_dir = os.path.join(log_dir, "tensorboard", config.experiment_tag)
         callback = EvalCallback(config.eval_freq, config.n_eval_episodes)
         agent = algorithms[config.algorithm](
             env=env,
             device=device,
             verbose=False,
             tensorboard_log=tensorboard_dir,
+            weight_dir=None if run else os.path.join(log_dir, config.experiment_tag, "weights"),
             **config.agent_args
         )
         if config.buffer_load_path:
@@ -69,8 +70,6 @@ def main(config: Config, tracker: Tracker, log_dir):
             **config.learn_args
         )
 
-        # Add the data to the tracker
-        tracker.add_weight_histogram(config.experiment_tag, agent.weight_histograms)
         for time, update, ep_return in zip(callback.data['time'], callback.data['update_step'], callback.data['mean']):
             tracker.add_datapoint(config.experiment_tag, timestep=time, update_step=update, value=ep_return)
 
@@ -104,4 +103,5 @@ if __name__ == "__main__":
         tracker.add_agent(config.experiment_tag, config.plot_titles, color=config.color, label=config.experiment_tag)
         main(config, tracker, base_output_path)
         tracker.save(base_output_path)
-    tracker.plot(os.path.join(base_output_path, "plots"))
+        plot_weights(os.path.join(base_output_path, "plots", config.experiment_tag), os.path.join(base_output_path, config.experiment_tag, "weights"))
+    tracker.plot_returns(os.path.join(base_output_path, "plots"), )

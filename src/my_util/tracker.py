@@ -76,7 +76,6 @@ class Tracker:
 
     def __init__(self):
         self.returns = {}
-        self.weight_histograms: dict[str, pd.DataFrame] = {}
         self.plots = {}
 
     def add_agent(self, agent_id: str, plots=None, **metric_kwargs):
@@ -109,16 +108,12 @@ class Tracker:
         ----------
         agent_id :
             name of the agent whose metric is modified
-        kwargs :
+hist        kwargs :
             arguments required for the metric's add_datapoint function
         """
         self.returns[agent_id].add_datapoint(**kwargs)
 
-    def add_weight_histogram(self, agent_id, histograms):
-        if self.weight_histograms.get(agent_id) is None:
-            self.weight_histograms[agent_id] = histograms
-
-    def plot(self, plot_dir: str):
+    def plot_returns(self, plot_dir: str, weights_dir):
         """
         Plots all metrics and saves the resulting figures
 
@@ -137,19 +132,6 @@ class Tracker:
             plt.savefig(os.path.join(plot_dir, "returns", plot_title.replace(".", "_")))
             plt.close()
 
-        for agent_id, layers in self.weight_histograms.items():
-            for layer_name, histogram in layers.items():
-                fig, axes = joypy.joyplot(histogram, colormap=plt.colormaps.get_cmap("autumn"), by="n_updates")
-                for idx, ax in enumerate(axes):
-                    ax.set_yticklabels([int(float(ax.get_yticklabels()[0].get_text()))])
-                    if idx % 2 != 0:
-                        ax.set_yticklabels("")
-                plt.xlabel(f"Model weights", fontsize=16)
-                plt.ylabel("Update Step", fontsize=16)
-                plt.title(layer_name, fontsize=20)
-                plt.savefig(os.path.join(plot_dir, "distributions", str(layer_name).replace(".", "_")))
-                plt.close()
-
     def save(self, path: str):
         """
         Saves the tracked data for each agent separately.
@@ -162,7 +144,28 @@ class Tracker:
         for agent_id, return_history in self.returns.items():
             os.makedirs(os.path.join(path, agent_id, "returns"), exist_ok=True)
             return_history.to_csv(os.path.join(path, agent_id, "returns", agent_id + ".csv"))
-        for agent_id, layers in self.weight_histograms.items():
-            os.makedirs(os.path.join(path, agent_id, "histograms"), exist_ok=True)
-            for layer_name, histogram in layers.items():
-                histogram.to_csv(os.path.join(path, agent_id, "histograms", layer_name.replace(".", "_") + ".csv"))
+
+
+def plot_weights(plot_dir, weights_dir):
+    for layer_name in os.listdir(weights_dir):
+        folder_path = os.path.join(weights_dir, layer_name)
+        if os.path.isdir(folder_path):
+            data = np.array([])
+            steps = np.array([])
+            for weight_file in os.listdir(folder_path):
+                weights = torch.load(os.path.join(folder_path, weight_file))
+                steps = np.concatenate((steps, np.repeat(weights.n_updates, len(weights))))
+                data = np.concatenate((data, weights.cpu().numpy()))
+            df = pd.DataFrame({"weights": data, "n_updates": steps})
+            fig, axes = joypy.joyplot(df, colormap=plt.colormaps.get_cmap("autumn"), by="n_updates")
+            for idx, ax in enumerate(axes):
+                ax.set_yticklabels([int(float(ax.get_yticklabels()[0].get_text()))])
+                if idx % 2 != 0:
+                    ax.set_yticklabels("")
+            plt.xlabel(f"Model weights", fontsize=16)
+            plt.ylabel("Update Step", fontsize=16)
+            plt.title(layer_name, fontsize=20)
+            os.makedirs(os.path.join(plot_dir), exist_ok=True)
+            plt.subplots_adjust(top=0.9, bottom=0.1)
+            plt.savefig(os.path.join(plot_dir, str(layer_name).replace(".", "_")))
+            plt.close()
